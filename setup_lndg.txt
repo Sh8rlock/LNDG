@@ -1,0 +1,2339 @@
+#!/bin/bash
+# LNDG Setup Script - Linux Network Diagram Generator
+# Author: Larry Odeyemi
+# Run: bash setup_lndg.txt
+
+echo "[*] Setting up LNDG - Linux Network Diagram Generator..."
+
+echo "[*] Creating network_model.py..."
+cat > network_model.py << 'LNDG_EOF_NETWORK_MODEL'
+"""
+LNDG - Network Model
+Custom graph model for network topology (no NetworkX dependency).
+Supports devices, connections, subnets, and security zones.
+"""
+
+
+class Device:
+    """Represents a network device (node)."""
+
+    def __init__(self, name, device_type="generic", ip=None, subnet=None,
+                 zone="internal", services=None, os_info=None, mac=None,
+                 description=None, risk_level="low"):
+        self.name = name
+        self.device_type = device_type  # firewall, router, switch, server, workstation, plc, hmi, scada, cloud, iot, printer
+        self.ip = ip
+        self.subnet = subnet
+        self.zone = zone  # dmz, corporate, ot, cloud, management, internet
+        self.services = services or []
+        self.os_info = os_info
+        self.mac = mac
+        self.description = description
+        self.risk_level = risk_level  # low, medium, high, critical
+        self.connections = []
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'type': self.device_type,
+            'ip': self.ip,
+            'subnet': self.subnet,
+            'zone': self.zone,
+            'services': self.services,
+            'os': self.os_info,
+            'mac': self.mac,
+            'description': self.description,
+            'risk_level': self.risk_level
+        }
+
+
+class Connection:
+    """Represents a network connection (edge)."""
+
+    def __init__(self, source, target, protocol=None, port=None,
+                 bandwidth=None, encrypted=False, label=None, bidirectional=True):
+        self.source = source
+        self.target = target
+        self.protocol = protocol
+        self.port = port
+        self.bandwidth = bandwidth
+        self.encrypted = encrypted
+        self.label = label or ""
+        self.bidirectional = bidirectional
+
+    def to_dict(self):
+        return {
+            'source': self.source,
+            'target': self.target,
+            'protocol': self.protocol,
+            'port': self.port,
+            'bandwidth': self.bandwidth,
+            'encrypted': self.encrypted,
+            'label': self.label,
+            'bidirectional': self.bidirectional
+        }
+
+
+class Subnet:
+    """Represents a network subnet."""
+
+    def __init__(self, name, cidr, zone="internal", vlan=None, description=None):
+        self.name = name
+        self.cidr = cidr
+        self.zone = zone
+        self.vlan = vlan
+        self.description = description
+        self.devices = []
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'cidr': self.cidr,
+            'zone': self.zone,
+            'vlan': self.vlan,
+            'description': self.description,
+            'device_count': len(self.devices)
+        }
+
+
+# Security zone definitions with colors and risk context
+ZONE_CONFIG = {
+    'internet':    {'color': '#DC2626', 'bg': '#FEE2E2', 'label': 'Internet / Untrusted', 'trust': 0},
+    'dmz':         {'color': '#EA580C', 'bg': '#FED7AA', 'label': 'DMZ', 'trust': 1},
+    'corporate':   {'color': '#2563EB', 'bg': '#DBEAFE', 'label': 'Corporate LAN', 'trust': 3},
+    'management':  {'color': '#7C3AED', 'bg': '#EDE9FE', 'label': 'Management', 'trust': 4},
+    'ot':          {'color': '#DC2626', 'bg': '#FEF3C7', 'label': 'OT / ICS Zone', 'trust': 5},
+    'cloud':       {'color': '#0891B2', 'bg': '#CFFAFE', 'label': 'Cloud (Azure/AWS)', 'trust': 2},
+    'internal':    {'color': '#059669', 'bg': '#D1FAE5', 'label': 'Internal', 'trust': 3},
+}
+
+# Device type display markers
+DEVICE_MARKERS = {
+    'firewall':    {'marker': 's', 'size': 700, 'icon': '[FW]'},
+    'router':      {'marker': 'D', 'size': 600, 'icon': '[R]'},
+    'switch':      {'marker': 'h', 'size': 550, 'icon': '[SW]'},
+    'server':      {'marker': 's', 'size': 600, 'icon': '[SRV]'},
+    'workstation':  {'marker': 'o', 'size': 400, 'icon': '[WS]'},
+    'plc':         {'marker': '^', 'size': 500, 'icon': '[PLC]'},
+    'hmi':         {'marker': 'p', 'size': 500, 'icon': '[HMI]'},
+    'scada':       {'marker': '*', 'size': 700, 'icon': '[SCADA]'},
+    'cloud':       {'marker': 'o', 'size': 600, 'icon': '[CLD]'},
+    'iot':         {'marker': 'v', 'size': 350, 'icon': '[IoT]'},
+    'printer':     {'marker': '8', 'size': 350, 'icon': '[PRN]'},
+    'database':    {'marker': 's', 'size': 550, 'icon': '[DB]'},
+    'ids':         {'marker': 'D', 'size': 500, 'icon': '[IDS]'},
+    'historian':   {'marker': 's', 'size': 550, 'icon': '[HIST]'},
+    'engineering': {'marker': 'p', 'size': 500, 'icon': '[EWS]'},
+    'generic':     {'marker': 'o', 'size': 400, 'icon': '[?]'},
+}
+
+
+class NetworkTopology:
+    """Complete network topology graph."""
+
+    def __init__(self, name="Network Topology"):
+        self.name = name
+        self.devices = {}       # name -> Device
+        self.connections = []    # list of Connection
+        self.subnets = {}       # name -> Subnet
+        self.metadata = {
+            'created_by': 'LNDG',
+            'version': '1.0.0',
+        }
+
+    def add_device(self, device):
+        """Add a device to the topology."""
+        self.devices[device.name] = device
+        # Auto-assign to subnet
+        if device.subnet and device.subnet in self.subnets:
+            self.subnets[device.subnet].devices.append(device.name)
+        return device
+
+    def add_connection(self, connection):
+        """Add a connection between devices."""
+        self.connections.append(connection)
+        # Track on devices
+        if connection.source in self.devices:
+            self.devices[connection.source].connections.append(connection.target)
+        if connection.bidirectional and connection.target in self.devices:
+            self.devices[connection.target].connections.append(connection.source)
+        return connection
+
+    def add_subnet(self, subnet):
+        """Add a subnet to the topology."""
+        self.subnets[subnet.name] = subnet
+        return subnet
+
+    def get_devices_by_zone(self, zone):
+        """Get all devices in a security zone."""
+        return {k: v for k, v in self.devices.items() if v.zone == zone}
+
+    def get_devices_by_type(self, device_type):
+        """Get all devices of a specific type."""
+        return {k: v for k, v in self.devices.items() if v.device_type == device_type}
+
+    def get_zones(self):
+        """Get all unique zones in the topology."""
+        return list(set(d.zone for d in self.devices.values()))
+
+    def get_stats(self):
+        """Get topology statistics."""
+        zones = {}
+        types = {}
+        for d in self.devices.values():
+            zones[d.zone] = zones.get(d.zone, 0) + 1
+            types[d.device_type] = types.get(d.device_type, 0) + 1
+
+        return {
+            'total_devices': len(self.devices),
+            'total_connections': len(self.connections),
+            'total_subnets': len(self.subnets),
+            'devices_by_zone': zones,
+            'devices_by_type': types,
+            'zones': self.get_zones(),
+        }
+
+    def to_dict(self):
+        """Export topology as dictionary."""
+        return {
+            'name': self.name,
+            'metadata': self.metadata,
+            'stats': self.get_stats(),
+            'subnets': {k: v.to_dict() for k, v in self.subnets.items()},
+            'devices': {k: v.to_dict() for k, v in self.devices.items()},
+            'connections': [c.to_dict() for c in self.connections],
+        }
+
+LNDG_EOF_NETWORK_MODEL
+
+echo "[*] Creating config_parser.py..."
+cat > config_parser.py << 'LNDG_EOF_CONFIG_PARSER'
+"""
+LNDG - Config Parser
+Parses YAML and JSON network topology configuration files.
+Supports devices, connections, subnets, and security zones.
+"""
+
+import json
+import os
+import yaml
+
+from network_model import (
+    Device, Connection, Subnet, NetworkTopology
+)
+
+
+def parse_yaml(filepath):
+    """Parse a YAML network topology file."""
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Config file not found: {filepath}")
+
+    with open(filepath, 'r') as f:
+        data = yaml.safe_load(f)
+
+    return _build_topology(data, source=filepath)
+
+
+def parse_json(filepath):
+    """Parse a JSON network topology file."""
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Config file not found: {filepath}")
+
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+
+    return _build_topology(data, source=filepath)
+
+
+def parse_config(filepath):
+    """Auto-detect format and parse config file."""
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in ('.yaml', '.yml'):
+        return parse_yaml(filepath)
+    elif ext == '.json':
+        return parse_json(filepath)
+    else:
+        # Try YAML first, then JSON
+        try:
+            return parse_yaml(filepath)
+        except Exception:
+            return parse_json(filepath)
+
+
+def _build_topology(data, source="config"):
+    """Build NetworkTopology from parsed config data."""
+    network = data.get('network', data)
+    name = network.get('name', 'Network Topology')
+    topology = NetworkTopology(name=name)
+    topology.metadata['source'] = source
+    topology.metadata['source_type'] = 'config'
+
+    # Parse subnets
+    for subnet_data in network.get('subnets', []):
+        subnet = Subnet(
+            name=subnet_data.get('name', 'Unknown'),
+            cidr=subnet_data.get('cidr', '0.0.0.0/0'),
+            zone=subnet_data.get('zone', 'internal'),
+            vlan=subnet_data.get('vlan'),
+            description=subnet_data.get('description', '')
+        )
+        topology.add_subnet(subnet)
+
+    # Parse devices
+    for device_data in network.get('devices', []):
+        device = Device(
+            name=device_data.get('name', 'Unknown'),
+            device_type=device_data.get('type', 'generic'),
+            ip=device_data.get('ip'),
+            subnet=device_data.get('subnet'),
+            zone=device_data.get('zone', 'internal'),
+            services=device_data.get('services', []),
+            os_info=device_data.get('os'),
+            mac=device_data.get('mac'),
+            description=device_data.get('description', ''),
+            risk_level=device_data.get('risk_level', 'low')
+        )
+        topology.add_device(device)
+
+    # Parse connections
+    for conn_data in network.get('connections', []):
+        connection = Connection(
+            source=conn_data.get('source', ''),
+            target=conn_data.get('target', ''),
+            protocol=conn_data.get('protocol'),
+            port=conn_data.get('port'),
+            bandwidth=conn_data.get('bandwidth'),
+            encrypted=conn_data.get('encrypted', False),
+            label=conn_data.get('label', ''),
+            bidirectional=conn_data.get('bidirectional', True)
+        )
+        topology.add_connection(connection)
+
+    return topology
+
+
+def generate_sample_config(filepath="sample_network.yaml"):
+    """Generate a sample YAML config file for reference."""
+    sample = {
+        'network': {
+            'name': 'Sample Corporate Network',
+            'subnets': [
+                {'name': 'DMZ', 'cidr': '10.0.1.0/24', 'zone': 'dmz', 'vlan': 10,
+                 'description': 'Internet-facing services'},
+                {'name': 'Corporate', 'cidr': '10.0.2.0/24', 'zone': 'corporate', 'vlan': 20,
+                 'description': 'Employee workstations and servers'},
+                {'name': 'OT Network', 'cidr': '10.0.3.0/24', 'zone': 'ot', 'vlan': 30,
+                 'description': 'Industrial control systems'},
+            ],
+            'devices': [
+                {'name': 'Edge-FW', 'type': 'firewall', 'ip': '10.0.0.1',
+                 'zone': 'internet', 'services': ['firewall'], 'description': 'Perimeter firewall'},
+                {'name': 'Web-Server', 'type': 'server', 'ip': '10.0.1.10',
+                 'subnet': 'DMZ', 'zone': 'dmz', 'services': ['HTTP', 'HTTPS'],
+                 'os': 'Ubuntu 22.04', 'description': 'Public web server'},
+                {'name': 'DC-01', 'type': 'server', 'ip': '10.0.2.10',
+                 'subnet': 'Corporate', 'zone': 'corporate', 'services': ['AD', 'DNS', 'LDAP'],
+                 'os': 'Windows Server 2022', 'description': 'Domain controller'},
+                {'name': 'PLC-01', 'type': 'plc', 'ip': '10.0.3.10',
+                 'subnet': 'OT Network', 'zone': 'ot', 'description': 'Process controller'},
+            ],
+            'connections': [
+                {'source': 'Edge-FW', 'target': 'Web-Server', 'protocol': 'HTTPS', 'port': 443},
+                {'source': 'Edge-FW', 'target': 'DC-01', 'protocol': 'VPN', 'encrypted': True},
+                {'source': 'DC-01', 'target': 'PLC-01', 'protocol': 'Modbus',
+                 'port': 502, 'encrypted': False, 'label': 'OT traffic'},
+            ]
+        }
+    }
+
+    with open(filepath, 'w') as f:
+        yaml.dump(sample, f, default_flow_style=False, sort_keys=False)
+
+    return filepath
+
+LNDG_EOF_CONFIG_PARSER
+
+echo "[*] Creating nmap_parser.py..."
+cat > nmap_parser.py << 'LNDG_EOF_NMAP_PARSER'
+"""
+LNDG - Nmap XML Parser
+Parses nmap scan results (XML format) into NetworkTopology.
+Usage: nmap -sV -oX scan_results.xml 10.0.0.0/24
+"""
+
+import os
+import xml.etree.ElementTree as ET
+
+from network_model import Device, Connection, Subnet, NetworkTopology
+
+
+# Well-known port to service mapping
+PORT_SERVICE_MAP = {
+    21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 53: 'DNS',
+    80: 'HTTP', 110: 'POP3', 135: 'RPC', 139: 'NetBIOS', 143: 'IMAP',
+    443: 'HTTPS', 445: 'SMB', 502: 'Modbus', 636: 'LDAPS', 993: 'IMAPS',
+    1433: 'MSSQL', 1521: 'Oracle', 3306: 'MySQL', 3389: 'RDP',
+    5432: 'PostgreSQL', 5900: 'VNC', 8080: 'HTTP-Alt', 8443: 'HTTPS-Alt',
+    44818: 'EtherNet/IP', 47808: 'BACnet', 20000: 'DNP3',
+}
+
+# Insecure services for risk flagging
+INSECURE_SERVICES = {'FTP', 'Telnet', 'HTTP', 'VNC', 'NetBIOS', 'SMB'}
+
+# OT/ICS protocol ports
+OT_PORTS = {502, 44818, 47808, 20000, 2222, 18245, 4840}
+
+
+def parse_nmap_xml(filepath):
+    """Parse nmap XML output file into NetworkTopology."""
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Nmap XML file not found: {filepath}")
+
+    tree = ET.parse(filepath)
+    root = tree.getroot()
+
+    topology = NetworkTopology(name="Nmap Scan Results")
+    topology.metadata['source'] = filepath
+    topology.metadata['source_type'] = 'nmap_xml'
+
+    # Extract scan metadata
+    scan_info = root.find('scaninfo')
+    if scan_info is not None:
+        topology.metadata['scan_type'] = scan_info.get('type', 'unknown')
+        topology.metadata['protocol'] = scan_info.get('protocol', 'unknown')
+
+    run_stats = root.find('runstats/finished')
+    if run_stats is not None:
+        topology.metadata['scan_time'] = run_stats.get('timestr', 'unknown')
+        topology.metadata['elapsed'] = run_stats.get('elapsed', 'unknown')
+
+    hosts_up = root.find('runstats/hosts')
+    if hosts_up is not None:
+        topology.metadata['hosts_up'] = int(hosts_up.get('up', 0))
+        topology.metadata['hosts_down'] = int(hosts_up.get('down', 0))
+
+    # Subnet tracking for auto-detection
+    subnet_ips = {}
+
+    # Parse each host
+    for host in root.findall('host'):
+        if host.find('status').get('state') != 'up':
+            continue
+
+        # Get IP address
+        addr_elem = host.find("address[@addrtype='ipv4']")
+        if addr_elem is None:
+            continue
+        ip = addr_elem.get('addr')
+
+        # Get MAC address
+        mac_elem = host.find("address[@addrtype='mac']")
+        mac = mac_elem.get('addr') if mac_elem is not None else None
+        vendor = mac_elem.get('vendor', '') if mac_elem is not None else ''
+
+        # Get hostname
+        hostname_elem = host.find('hostnames/hostname')
+        hostname = hostname_elem.get('name') if hostname_elem is not None else ip
+
+        # Get OS info
+        os_info = None
+        os_elem = host.find('os/osmatch')
+        if os_elem is not None:
+            os_info = os_elem.get('name', 'Unknown')
+
+        # Parse open ports and services
+        services = []
+        open_ports = []
+        has_ot_services = False
+        has_insecure = False
+
+        ports_elem = host.find('ports')
+        if ports_elem is not None:
+            for port in ports_elem.findall('port'):
+                state = port.find('state')
+                if state is not None and state.get('state') == 'open':
+                    port_num = int(port.get('portid'))
+                    protocol = port.get('protocol', 'tcp')
+                    open_ports.append(port_num)
+
+                    service_elem = port.find('service')
+                    if service_elem is not None:
+                        svc_name = service_elem.get('name', '')
+                        svc_product = service_elem.get('product', '')
+                        service_str = f"{svc_name}/{port_num}"
+                        if svc_product:
+                            service_str += f" ({svc_product})"
+                        services.append(service_str)
+                    else:
+                        svc_name = PORT_SERVICE_MAP.get(port_num, f'port-{port_num}')
+                        services.append(f"{svc_name}/{port_num}")
+
+                    if port_num in OT_PORTS:
+                        has_ot_services = True
+                    if PORT_SERVICE_MAP.get(port_num, '') in INSECURE_SERVICES:
+                        has_insecure = True
+
+        # Determine device type from services and OS
+        device_type = _infer_device_type(services, os_info, open_ports, vendor)
+
+        # Determine zone
+        zone = 'ot' if has_ot_services else 'corporate'
+
+        # Determine risk level
+        risk_level = 'low'
+        if has_insecure and has_ot_services:
+            risk_level = 'critical'
+        elif has_ot_services:
+            risk_level = 'high'
+        elif has_insecure:
+            risk_level = 'medium'
+        elif len(open_ports) > 10:
+            risk_level = 'medium'
+
+        # Track subnet
+        subnet_prefix = '.'.join(ip.split('.')[:3]) + '.0/24'
+        if subnet_prefix not in subnet_ips:
+            subnet_ips[subnet_prefix] = []
+        subnet_ips[subnet_prefix].append(hostname)
+
+        # Create device
+        device = Device(
+            name=hostname,
+            device_type=device_type,
+            ip=ip,
+            subnet=subnet_prefix,
+            zone=zone,
+            services=services,
+            os_info=os_info,
+            mac=mac,
+            description=f"Vendor: {vendor}" if vendor else None,
+            risk_level=risk_level
+        )
+        topology.add_device(device)
+
+    # Auto-create subnets
+    for cidr, devices in subnet_ips.items():
+        has_ot = any(
+            topology.devices[d].zone == 'ot' for d in devices if d in topology.devices
+        )
+        subnet = Subnet(
+            name=cidr,
+            cidr=cidr,
+            zone='ot' if has_ot else 'corporate',
+            description=f"Auto-detected subnet ({len(devices)} hosts)"
+        )
+        topology.add_subnet(subnet)
+
+    # Infer connections from shared subnets
+    _infer_connections(topology)
+
+    return topology
+
+
+def _infer_device_type(services, os_info, ports, vendor):
+    """Infer device type from service fingerprint."""
+    services_lower = ' '.join(services).lower()
+    os_lower = (os_info or '').lower()
+    vendor_lower = (vendor or '').lower()
+
+    # OT/ICS devices
+    if any(p in ports for p in OT_PORTS):
+        if 502 in ports:
+            return 'plc'
+        return 'scada'
+
+    # Network infrastructure
+    if any(kw in vendor_lower for kw in ['cisco', 'juniper', 'arista', 'fortinet', 'palo alto']):
+        if any(p in ports for p in [179, 520, 8291]):
+            return 'router'
+        return 'switch'
+
+    # Firewalls
+    if any(kw in services_lower for kw in ['firewall', 'palo', 'fortinet']):
+        return 'firewall'
+
+    # Servers
+    if 'server' in os_lower or any(p in ports for p in [80, 443, 3306, 1433, 5432, 1521, 8080]):
+        if any(p in ports for p in [3306, 1433, 5432, 1521]):
+            return 'database'
+        return 'server'
+
+    # Printers
+    if any(p in ports for p in [9100, 515, 631]) or 'print' in vendor_lower:
+        return 'printer'
+
+    # Workstations
+    if 'windows' in os_lower and 'server' not in os_lower:
+        return 'workstation'
+
+    if 3389 in ports and len(ports) < 5:
+        return 'workstation'
+
+    return 'generic'
+
+
+def _infer_connections(topology):
+    """Infer connections between devices on same subnet."""
+    subnet_devices = {}
+    for name, device in topology.devices.items():
+        if device.subnet:
+            if device.subnet not in subnet_devices:
+                subnet_devices[device.subnet] = []
+            subnet_devices[device.subnet].append(name)
+
+    for subnet, devices in subnet_devices.items():
+        # Find gateway/router/firewall in subnet
+        gateways = [d for d in devices
+                     if topology.devices[d].device_type in ('router', 'firewall', 'switch')]
+
+        if gateways:
+            # Connect all devices to gateway
+            gw = gateways[0]
+            for d in devices:
+                if d != gw:
+                    connection = Connection(
+                        source=gw,
+                        target=d,
+                        label=f"Subnet {subnet}"
+                    )
+                    topology.add_connection(connection)
+        elif len(devices) > 1:
+            # Star topology from first device
+            hub = devices[0]
+            for d in devices[1:]:
+                connection = Connection(
+                    source=hub,
+                    target=d,
+                    label=f"Subnet {subnet}"
+                )
+                topology.add_connection(connection)
+
+
+def generate_sample_nmap_xml(filepath="sample_nmap_scan.xml"):
+    """Generate a sample nmap XML file for testing."""
+    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -oX scan.xml 10.0.0.0/24" start="1713400000">
+<scaninfo type="syn" protocol="tcp" numservices="1000" services="1-1024"/>
+
+<host starttime="1713400001" endtime="1713400010">
+  <status state="up"/>
+  <address addr="10.0.0.1" addrtype="ipv4"/>
+  <address addr="00:1A:2B:3C:4D:01" addrtype="mac" vendor="Cisco"/>
+  <hostnames><hostname name="edge-fw-01" type="PTR"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="443"><state state="open"/><service name="https" product="Palo Alto"/></port>
+    <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH"/></port>
+  </ports>
+  <os><osmatch name="Palo Alto PAN-OS 10.x" accuracy="95"/></os>
+</host>
+
+<host starttime="1713400001" endtime="1713400010">
+  <status state="up"/>
+  <address addr="10.0.1.10" addrtype="ipv4"/>
+  <address addr="00:1A:2B:3C:4D:10" addrtype="mac" vendor="Dell"/>
+  <hostnames><hostname name="web-srv-01" type="PTR"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="80"><state state="open"/><service name="http" product="nginx"/></port>
+    <port protocol="tcp" portid="443"><state state="open"/><service name="https" product="nginx"/></port>
+    <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH"/></port>
+  </ports>
+  <os><osmatch name="Linux 5.x" accuracy="90"/></os>
+</host>
+
+<host starttime="1713400001" endtime="1713400010">
+  <status state="up"/>
+  <address addr="10.0.2.10" addrtype="ipv4"/>
+  <address addr="00:1A:2B:3C:4D:20" addrtype="mac" vendor="Dell"/>
+  <hostnames><hostname name="dc-01" type="PTR"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="53"><state state="open"/><service name="dns" product="Microsoft DNS"/></port>
+    <port protocol="tcp" portid="88"><state state="open"/><service name="kerberos"/></port>
+    <port protocol="tcp" portid="389"><state state="open"/><service name="ldap" product="Active Directory"/></port>
+    <port protocol="tcp" portid="445"><state state="open"/><service name="smb" product="Windows SMB"/></port>
+    <port protocol="tcp" portid="636"><state state="open"/><service name="ldaps"/></port>
+    <port protocol="tcp" portid="3389"><state state="open"/><service name="rdp"/></port>
+  </ports>
+  <os><osmatch name="Windows Server 2022" accuracy="92"/></os>
+</host>
+
+<host starttime="1713400001" endtime="1713400010">
+  <status state="up"/>
+  <address addr="10.0.3.10" addrtype="ipv4"/>
+  <address addr="00:1A:2B:3C:4D:30" addrtype="mac" vendor="Siemens"/>
+  <hostnames><hostname name="plc-reactor-01" type="PTR"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="502"><state state="open"/><service name="modbus"/></port>
+    <port protocol="tcp" portid="80"><state state="open"/><service name="http" product="Siemens S7"/></port>
+  </ports>
+  <os><osmatch name="Siemens SIMATIC S7-1500" accuracy="85"/></os>
+</host>
+
+<host starttime="1713400001" endtime="1713400010">
+  <status state="up"/>
+  <address addr="10.0.3.20" addrtype="ipv4"/>
+  <address addr="00:1A:2B:3C:4D:31" addrtype="mac" vendor="Rockwell"/>
+  <hostnames><hostname name="hmi-control-01" type="PTR"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="44818"><state state="open"/><service name="EtherNet-IP"/></port>
+    <port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>
+    <port protocol="tcp" portid="443"><state state="open"/><service name="https"/></port>
+  </ports>
+  <os><osmatch name="Rockwell FactoryTalk" accuracy="80"/></os>
+</host>
+
+<runstats><finished time="1713400060" timestr="Thu Apr 18 2026" elapsed="60"/>
+<hosts up="5" down="251" total="256"/></runstats>
+</nmaprun>"""
+
+    with open(filepath, 'w') as f:
+        f.write(xml_content)
+
+    return filepath
+
+LNDG_EOF_NMAP_PARSER
+
+echo "[*] Creating demo_data.py..."
+cat > demo_data.py << 'LNDG_EOF_DEMO_DATA'
+"""
+LNDG - Demo Data Generator
+Creates a realistic enterprise + OT/ICS network topology for demonstration.
+Simulates a chemical manufacturing facility with corporate IT and industrial control systems.
+"""
+
+from network_model import Device, Connection, Subnet, NetworkTopology
+
+
+def generate_demo_topology():
+    """Generate a full enterprise + OT/ICS demo topology."""
+    topology = NetworkTopology(name="Chevron Phillips Chemical - Demo Network")
+    topology.metadata['source'] = 'demo'
+    topology.metadata['source_type'] = 'demo'
+    topology.metadata['description'] = (
+        'Simulated enterprise and OT/ICS network topology for a chemical '
+        'manufacturing facility. Includes corporate IT, DMZ, cloud, '
+        'management, and OT/ICS security zones.'
+    )
+
+    # ── Subnets ──────────────────────────────────────────────
+    subnets = [
+        Subnet('Internet', '0.0.0.0/0', 'internet', description='External/untrusted network'),
+        Subnet('DMZ', '10.10.1.0/24', 'dmz', vlan=10,
+               description='Internet-facing services'),
+        Subnet('Corporate-Servers', '10.10.2.0/24', 'corporate', vlan=20,
+               description='Internal servers and domain controllers'),
+        Subnet('Corporate-Users', '10.10.3.0/24', 'corporate', vlan=30,
+               description='Employee workstations'),
+        Subnet('Management', '10.10.4.0/24', 'management', vlan=40,
+               description='Network management and monitoring'),
+        Subnet('Cloud-Transit', '10.10.5.0/24', 'cloud', vlan=50,
+               description='Azure/AWS connectivity'),
+        Subnet('OT-Level3', '10.20.1.0/24', 'ot', vlan=100,
+               description='OT Level 3 - Site operations and historian'),
+        Subnet('OT-Level2', '10.20.2.0/24', 'ot', vlan=200,
+               description='OT Level 2 - HMI and supervisory control'),
+        Subnet('OT-Level1', '10.20.3.0/24', 'ot', vlan=300,
+               description='OT Level 1 - PLCs and basic control'),
+        Subnet('OT-Level0', '10.20.4.0/24', 'ot', vlan=400,
+               description='OT Level 0 - Field devices and sensors'),
+    ]
+    for s in subnets:
+        topology.add_subnet(s)
+
+    # ── Internet Zone ────────────────────────────────────────
+    devices_internet = [
+        Device('ISP-Router', 'router', '1.1.1.1', 'Internet', 'internet',
+               services=['BGP'], description='ISP upstream router'),
+        Device('Cloud-Azure', 'cloud', '52.168.0.1', 'Internet', 'cloud',
+               services=['Azure AD', 'Intune', 'Sentinel', 'Defender'],
+               description='Azure cloud services'),
+    ]
+
+    # ── DMZ Zone ─────────────────────────────────────────────
+    devices_dmz = [
+        Device('Edge-Firewall', 'firewall', '10.10.0.1', 'DMZ', 'dmz',
+               services=['Firewall', 'VPN', 'IPS'],
+               description='Palo Alto PA-5250 perimeter firewall',
+               risk_level='low'),
+        Device('Web-Server-01', 'server', '10.10.1.10', 'DMZ', 'dmz',
+               services=['HTTPS/443', 'HTTP/80'], os_info='Ubuntu 22.04 LTS',
+               description='Public-facing web application server',
+               risk_level='medium'),
+        Device('Mail-Gateway', 'server', '10.10.1.20', 'DMZ', 'dmz',
+               services=['SMTP/25', 'SMTPS/465'],
+               description='Email security gateway (Proofpoint)',
+               risk_level='medium'),
+        Device('VPN-Concentrator', 'server', '10.10.1.30', 'DMZ', 'dmz',
+               services=['IPSec/500', 'SSL-VPN/443'],
+               description='Remote access VPN (GlobalProtect)',
+               risk_level='low'),
+        Device('IDS-Sensor-01', 'ids', '10.10.1.40', 'DMZ', 'dmz',
+               services=['SPAN', 'Snort'],
+               description='Network IDS sensor monitoring DMZ traffic'),
+    ]
+
+    # ── Corporate Zone ───────────────────────────────────────
+    devices_corp = [
+        Device('Core-Switch', 'switch', '10.10.2.1', 'Corporate-Servers', 'corporate',
+               services=['VLAN', 'STP', 'LACP'],
+               description='Cisco Catalyst 9300 core switch'),
+        Device('DC-01', 'server', '10.10.2.10', 'Corporate-Servers', 'corporate',
+               services=['AD/389', 'DNS/53', 'Kerberos/88', 'LDAPS/636'],
+               os_info='Windows Server 2022',
+               description='Primary domain controller (Entra ID synced)'),
+        Device('DC-02', 'server', '10.10.2.11', 'Corporate-Servers', 'corporate',
+               services=['AD/389', 'DNS/53', 'Kerberos/88'],
+               os_info='Windows Server 2022',
+               description='Secondary domain controller'),
+        Device('SIEM-Splunk', 'server', '10.10.2.20', 'Corporate-Servers', 'corporate',
+               services=['Splunk/8089', 'Syslog/514', 'HEC/8088'],
+               os_info='RHEL 8',
+               description='Splunk Enterprise SIEM (500GB/day)'),
+        Device('File-Server', 'server', '10.10.2.30', 'Corporate-Servers', 'corporate',
+               services=['SMB/445', 'NFS/2049'],
+               os_info='Windows Server 2022',
+               description='Corporate file shares'),
+        Device('DB-Server-01', 'database', '10.10.2.40', 'Corporate-Servers', 'corporate',
+               services=['MSSQL/1433', 'TDS/1433'],
+               os_info='Windows Server 2022',
+               description='SQL Server for business applications'),
+        Device('Workstation-Eng-01', 'workstation', '10.10.3.10', 'Corporate-Users', 'corporate',
+               services=['RDP/3389'], os_info='Windows 11 Enterprise',
+               description='Engineering workstation (CrowdStrike agent)'),
+        Device('Workstation-Eng-02', 'workstation', '10.10.3.11', 'Corporate-Users', 'corporate',
+               services=['RDP/3389'], os_info='Windows 11 Enterprise',
+               description='Engineering workstation (CrowdStrike agent)'),
+        Device('Printer-Floor2', 'printer', '10.10.3.50', 'Corporate-Users', 'corporate',
+               services=['IPP/631', 'JetDirect/9100'],
+               description='HP LaserJet Enterprise'),
+    ]
+
+    # ── Management Zone ──────────────────────────────────────
+    devices_mgmt = [
+        Device('NMS-SolarWinds', 'server', '10.10.4.10', 'Management', 'management',
+               services=['SNMP/161', 'HTTPS/443', 'Syslog/514'],
+               os_info='Windows Server 2022',
+               description='SolarWinds network monitoring'),
+        Device('Vuln-Scanner', 'server', '10.10.4.20', 'Management', 'management',
+               services=['Nessus/8834', 'HTTPS/443'],
+               os_info='Ubuntu 22.04',
+               description='Tenable Nessus vulnerability scanner'),
+        Device('Jump-Server', 'server', '10.10.4.30', 'Management', 'management',
+               services=['RDP/3389', 'SSH/22'],
+               os_info='Windows Server 2022',
+               description='Privileged access jump box (PAM-controlled)'),
+    ]
+
+    # ── OT/ICS Zone (Purdue Model) ──────────────────────────
+    devices_ot = [
+        # Level 3.5 - IT/OT DMZ
+        Device('OT-Firewall', 'firewall', '10.20.0.1', 'OT-Level3', 'ot',
+               services=['Firewall', 'IPS'],
+               description='Fortinet FortiGate IT/OT boundary firewall',
+               risk_level='low'),
+
+        # Level 3 - Site Operations
+        Device('Historian-Server', 'historian', '10.20.1.10', 'OT-Level3', 'ot',
+               services=['OSIsoft-PI/5450', 'HTTPS/443', 'SQL/1433'],
+               os_info='Windows Server 2019',
+               description='OSIsoft PI historian (process data archive)',
+               risk_level='medium'),
+        Device('OT-AD-Server', 'server', '10.20.1.20', 'OT-Level3', 'ot',
+               services=['AD/389', 'DNS/53'],
+               os_info='Windows Server 2019',
+               description='OT domain controller (isolated from corporate AD)',
+               risk_level='medium'),
+        Device('OT-Patch-Server', 'server', '10.20.1.30', 'OT-Level3', 'ot',
+               services=['WSUS/8530'],
+               os_info='Windows Server 2019',
+               description='OT patch management (WSUS)',
+               risk_level='low'),
+
+        # Level 2 - Supervisory Control
+        Device('SCADA-Server', 'scada', '10.20.2.10', 'OT-Level2', 'ot',
+               services=['OPC-UA/4840', 'Modbus-GW/502', 'HTTPS/443'],
+               os_info='Windows Server 2019',
+               description='Honeywell Experion SCADA server',
+               risk_level='high'),
+        Device('HMI-Reactor-01', 'hmi', '10.20.2.20', 'OT-Level2', 'ot',
+               services=['VNC/5900', 'HTTP/80'],
+               os_info='Windows 10 LTSC',
+               description='Reactor control HMI panel',
+               risk_level='high'),
+        Device('HMI-Distill-01', 'hmi', '10.20.2.21', 'OT-Level2', 'ot',
+               services=['VNC/5900', 'HTTP/80'],
+               os_info='Windows 10 LTSC',
+               description='Distillation unit HMI panel',
+               risk_level='high'),
+        Device('EWS-01', 'engineering', '10.20.2.30', 'OT-Level2', 'ot',
+               services=['SSH/22', 'Modbus/502'],
+               os_info='Windows 10',
+               description='Engineering workstation (PLC programming)',
+               risk_level='high'),
+
+        # Level 1 - Basic Control
+        Device('PLC-Reactor-01', 'plc', '10.20.3.10', 'OT-Level1', 'ot',
+               services=['Modbus/502', 'EtherNet-IP/44818'],
+               os_info='Siemens S7-1500',
+               description='Reactor process PLC',
+               risk_level='critical'),
+        Device('PLC-Reactor-02', 'plc', '10.20.3.11', 'OT-Level1', 'ot',
+               services=['Modbus/502'],
+               os_info='Allen-Bradley ControlLogix',
+               description='Reactor safety PLC (SIL-2)',
+               risk_level='critical'),
+        Device('PLC-Distill-01', 'plc', '10.20.3.20', 'OT-Level1', 'ot',
+               services=['Modbus/502', 'EtherNet-IP/44818'],
+               os_info='Siemens S7-1200',
+               description='Distillation column PLC',
+               risk_level='critical'),
+        Device('RTU-Tank-01', 'plc', '10.20.3.30', 'OT-Level1', 'ot',
+               services=['DNP3/20000', 'Modbus/502'],
+               description='Tank farm RTU',
+               risk_level='critical'),
+
+        # Level 0 - Field Devices
+        Device('Sensor-Temp-R1', 'iot', '10.20.4.10', 'OT-Level0', 'ot',
+               services=['Modbus/502'],
+               description='Reactor 1 temperature transmitter',
+               risk_level='high'),
+        Device('Sensor-Press-R1', 'iot', '10.20.4.11', 'OT-Level0', 'ot',
+               services=['HART'],
+               description='Reactor 1 pressure transmitter',
+               risk_level='high'),
+        Device('Sensor-Flow-D1', 'iot', '10.20.4.20', 'OT-Level0', 'ot',
+               services=['Modbus/502'],
+               description='Distillation flow meter',
+               risk_level='high'),
+        Device('Valve-Act-R1', 'iot', '10.20.4.30', 'OT-Level0', 'ot',
+               services=['HART', 'Modbus/502'],
+               description='Reactor 1 control valve actuator',
+               risk_level='critical'),
+    ]
+
+    # Add all devices
+    for device_list in [devices_internet, devices_dmz, devices_corp,
+                        devices_mgmt, devices_ot]:
+        for device in device_list:
+            topology.add_device(device)
+
+    # ── Connections ──────────────────────────────────────────
+    connections = [
+        # Internet → DMZ
+        Connection('ISP-Router', 'Edge-Firewall', 'BGP', 179, '1Gbps', label='WAN uplink'),
+        Connection('Cloud-Azure', 'Edge-Firewall', 'IPSec', 500, encrypted=True, label='Site-to-site VPN'),
+
+        # DMZ internal
+        Connection('Edge-Firewall', 'Web-Server-01', 'HTTPS', 443, label='Inbound web traffic'),
+        Connection('Edge-Firewall', 'Mail-Gateway', 'SMTP', 25, label='Inbound email'),
+        Connection('Edge-Firewall', 'VPN-Concentrator', 'SSL-VPN', 443, encrypted=True, label='Remote access'),
+        Connection('IDS-Sensor-01', 'Edge-Firewall', 'SPAN', label='Traffic mirroring', bidirectional=False),
+
+        # DMZ → Corporate
+        Connection('Edge-Firewall', 'Core-Switch', 'Trunk', label='Inter-VLAN routing'),
+        Connection('Mail-Gateway', 'DC-01', 'LDAPS', 636, encrypted=True, label='Directory lookup'),
+
+        # Corporate core
+        Connection('Core-Switch', 'DC-01', 'Trunk', label='Server VLAN'),
+        Connection('Core-Switch', 'DC-02', 'Trunk', label='Server VLAN'),
+        Connection('Core-Switch', 'SIEM-Splunk', 'Trunk', label='Server VLAN'),
+        Connection('Core-Switch', 'File-Server', 'Trunk', label='Server VLAN'),
+        Connection('Core-Switch', 'DB-Server-01', 'Trunk', label='Server VLAN'),
+        Connection('Core-Switch', 'Workstation-Eng-01', 'Trunk', label='User VLAN'),
+        Connection('Core-Switch', 'Workstation-Eng-02', 'Trunk', label='User VLAN'),
+        Connection('Core-Switch', 'Printer-Floor2', 'Trunk', label='User VLAN'),
+
+        # DC replication
+        Connection('DC-01', 'DC-02', 'AD-Repl', 389, label='AD replication'),
+
+        # Management
+        Connection('Core-Switch', 'NMS-SolarWinds', 'Trunk', label='Mgmt VLAN'),
+        Connection('Core-Switch', 'Vuln-Scanner', 'Trunk', label='Mgmt VLAN'),
+        Connection('Core-Switch', 'Jump-Server', 'Trunk', label='Mgmt VLAN'),
+        Connection('NMS-SolarWinds', 'SIEM-Splunk', 'Syslog', 514, label='Alert forwarding', bidirectional=False),
+
+        # Log collection
+        Connection('DC-01', 'SIEM-Splunk', 'WinRM', 5985, label='Log collection', bidirectional=False),
+        Connection('Edge-Firewall', 'SIEM-Splunk', 'Syslog', 514, label='FW logs', bidirectional=False),
+
+        # Cloud
+        Connection('DC-01', 'Cloud-Azure', 'HTTPS', 443, encrypted=True, label='Azure AD Connect sync'),
+
+        # IT/OT Boundary (critical segmentation point)
+        Connection('Core-Switch', 'OT-Firewall', 'Trunk', label='IT/OT boundary (restricted)'),
+
+        # OT Level 3
+        Connection('OT-Firewall', 'Historian-Server', 'HTTPS', 443, label='Historian access'),
+        Connection('OT-Firewall', 'OT-AD-Server', 'LDAPS', 636, encrypted=True, label='OT auth'),
+        Connection('OT-Firewall', 'OT-Patch-Server', 'HTTPS', 8530, label='Patch distribution'),
+        Connection('Historian-Server', 'SIEM-Splunk', 'Syslog', 514, label='OT logs to SIEM', bidirectional=False),
+
+        # OT Level 3 → Level 2
+        Connection('Historian-Server', 'SCADA-Server', 'OPC-UA', 4840, label='Process data collection'),
+        Connection('OT-AD-Server', 'SCADA-Server', 'LDAP', 389, label='OT authentication'),
+
+        # OT Level 2
+        Connection('SCADA-Server', 'HMI-Reactor-01', 'OPC-UA', 4840, label='Reactor control'),
+        Connection('SCADA-Server', 'HMI-Distill-01', 'OPC-UA', 4840, label='Distillation control'),
+        Connection('EWS-01', 'SCADA-Server', 'SSH', 22, label='Engineering access'),
+
+        # OT Level 2 → Level 1
+        Connection('HMI-Reactor-01', 'PLC-Reactor-01', 'Modbus', 502, label='Reactor control loop'),
+        Connection('HMI-Reactor-01', 'PLC-Reactor-02', 'Modbus', 502, label='Safety interlock'),
+        Connection('HMI-Distill-01', 'PLC-Distill-01', 'Modbus', 502, label='Distillation control'),
+        Connection('EWS-01', 'PLC-Reactor-01', 'Modbus', 502, label='PLC programming'),
+        Connection('EWS-01', 'PLC-Distill-01', 'EtherNet/IP', 44818, label='PLC programming'),
+        Connection('SCADA-Server', 'RTU-Tank-01', 'DNP3', 20000, label='Tank monitoring'),
+
+        # OT Level 1 → Level 0
+        Connection('PLC-Reactor-01', 'Sensor-Temp-R1', 'Modbus', 502, label='Temperature reading'),
+        Connection('PLC-Reactor-01', 'Sensor-Press-R1', 'HART', label='Pressure reading'),
+        Connection('PLC-Reactor-01', 'Valve-Act-R1', 'Modbus', 502, label='Valve control'),
+        Connection('PLC-Distill-01', 'Sensor-Flow-D1', 'Modbus', 502, label='Flow reading'),
+    ]
+
+    for conn in connections:
+        topology.add_connection(conn)
+
+    return topology
+
+
+def generate_small_demo():
+    """Generate a smaller demo for quick testing."""
+    topology = NetworkTopology(name="Small Office Network - Demo")
+    topology.metadata['source'] = 'demo_small'
+    topology.metadata['source_type'] = 'demo'
+
+    # Subnets
+    topology.add_subnet(Subnet('WAN', '0.0.0.0/0', 'internet'))
+    topology.add_subnet(Subnet('LAN', '192.168.1.0/24', 'corporate', vlan=1))
+    topology.add_subnet(Subnet('Servers', '192.168.2.0/24', 'corporate', vlan=2))
+
+    # Devices
+    devices = [
+        Device('Internet', 'cloud', '0.0.0.0', 'WAN', 'internet'),
+        Device('Firewall', 'firewall', '192.168.0.1', 'WAN', 'dmz',
+               services=['Firewall', 'NAT', 'VPN']),
+        Device('Switch-01', 'switch', '192.168.1.1', 'LAN', 'corporate',
+               services=['VLAN', 'STP']),
+        Device('PC-01', 'workstation', '192.168.1.10', 'LAN', 'corporate',
+               os_info='Windows 11'),
+        Device('PC-02', 'workstation', '192.168.1.11', 'LAN', 'corporate',
+               os_info='Windows 11'),
+        Device('Server-01', 'server', '192.168.2.10', 'Servers', 'corporate',
+               services=['HTTP', 'HTTPS', 'SSH'], os_info='Ubuntu 22.04'),
+        Device('Printer', 'printer', '192.168.1.50', 'LAN', 'corporate'),
+    ]
+    for d in devices:
+        topology.add_device(d)
+
+    # Connections
+    conns = [
+        Connection('Internet', 'Firewall', 'WAN', label='Internet uplink'),
+        Connection('Firewall', 'Switch-01', 'Trunk', label='LAN'),
+        Connection('Switch-01', 'PC-01', 'Ethernet', label='Access port'),
+        Connection('Switch-01', 'PC-02', 'Ethernet', label='Access port'),
+        Connection('Switch-01', 'Server-01', 'Ethernet', label='Server port'),
+        Connection('Switch-01', 'Printer', 'Ethernet', label='Access port'),
+    ]
+    for c in conns:
+        topology.add_connection(c)
+
+    return topology
+
+LNDG_EOF_DEMO_DATA
+
+echo "[*] Creating diagram_engine.py..."
+cat > diagram_engine.py << 'LNDG_EOF_DIAGRAM_ENGINE'
+"""
+LNDG - Diagram Engine
+Generates professional network topology diagrams using matplotlib.
+Supports security zone coloring, device type icons, and multiple layouts.
+"""
+
+import math
+import os
+from datetime import datetime
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch
+
+from network_model import ZONE_CONFIG, DEVICE_MARKERS, NetworkTopology
+
+
+# Layout algorithms
+def _layout_zone_grouped(topology):
+    """Layout devices grouped by security zone in horizontal bands."""
+    positions = {}
+    zones = sorted(
+        set(d.zone for d in topology.devices.values()),
+        key=lambda z: ZONE_CONFIG.get(z, {}).get('trust', 3)
+    )
+
+    zone_y_start = 0.95
+    zone_height = 0.85 / max(len(zones), 1)
+
+    for zone_idx, zone in enumerate(zones):
+        zone_devices = [name for name, d in topology.devices.items() if d.zone == zone]
+        if not zone_devices:
+            continue
+
+        y_center = zone_y_start - (zone_idx * zone_height) - (zone_height / 2)
+        num_devices = len(zone_devices)
+
+        # Spread devices horizontally
+        x_margin = 0.08
+        x_range = 1.0 - (2 * x_margin)
+
+        for i, device_name in enumerate(zone_devices):
+            if num_devices == 1:
+                x = 0.5
+            else:
+                x = x_margin + (i * x_range / (num_devices - 1))
+            positions[device_name] = (x, y_center)
+
+    return positions
+
+
+def _layout_hierarchical(topology):
+    """Layout devices in hierarchical tiers based on device type."""
+    tier_order = {
+        'cloud': 0, 'internet': 0,
+        'firewall': 1, 'router': 1,
+        'ids': 2,
+        'switch': 2,
+        'server': 3, 'database': 3, 'historian': 3,
+        'scada': 4,
+        'hmi': 5, 'engineering': 5,
+        'workstation': 6, 'printer': 6,
+        'plc': 7,
+        'iot': 8,
+        'generic': 6,
+    }
+
+    tiers = {}
+    for name, device in topology.devices.items():
+        tier = tier_order.get(device.device_type, 6)
+        if tier not in tiers:
+            tiers[tier] = []
+        tiers[tier].append(name)
+
+    positions = {}
+    sorted_tiers = sorted(tiers.keys())
+    num_tiers = len(sorted_tiers)
+
+    for tier_idx, tier in enumerate(sorted_tiers):
+        devices = tiers[tier]
+        y = 0.92 - (tier_idx * 0.82 / max(num_tiers - 1, 1))
+
+        x_margin = 0.06
+        x_range = 1.0 - (2 * x_margin)
+
+        for i, device_name in enumerate(devices):
+            if len(devices) == 1:
+                x = 0.5
+            else:
+                x = x_margin + (i * x_range / (len(devices) - 1))
+            positions[device_name] = (x, y)
+
+    return positions
+
+
+def _layout_purdue(topology):
+    """Layout OT/ICS devices using the Purdue Model levels."""
+    purdue_levels = {
+        'internet': {'level': 5, 'label': 'Level 5 - Enterprise'},
+        'dmz': {'level': 4, 'label': 'Level 4 - DMZ'},
+        'corporate': {'level': 3.5, 'label': 'Level 3.5 - IT/OT DMZ'},
+        'management': {'level': 3.5, 'label': 'Level 3.5 - Management'},
+        'cloud': {'level': 5, 'label': 'Level 5 - Cloud'},
+    }
+
+    # Assign OT devices to Purdue levels based on subnet
+    subnet_levels = {}
+    for name, subnet in topology.subnets.items():
+        if 'Level0' in name or 'level0' in name:
+            subnet_levels[name] = 0
+        elif 'Level1' in name or 'level1' in name:
+            subnet_levels[name] = 1
+        elif 'Level2' in name or 'level2' in name:
+            subnet_levels[name] = 2
+        elif 'Level3' in name or 'level3' in name:
+            subnet_levels[name] = 3
+
+    levels = {}
+    for name, device in topology.devices.items():
+        if device.subnet and device.subnet in subnet_levels:
+            level = subnet_levels[device.subnet]
+        elif device.zone in purdue_levels:
+            level = purdue_levels[device.zone]['level']
+        else:
+            level = 3.5
+        level_key = level
+        if level_key not in levels:
+            levels[level_key] = []
+        levels[level_key].append(name)
+
+    positions = {}
+    sorted_levels = sorted(levels.keys(), reverse=True)
+    num_levels = len(sorted_levels)
+
+    for level_idx, level in enumerate(sorted_levels):
+        devices = levels[level]
+        y = 0.92 - (level_idx * 0.82 / max(num_levels - 1, 1))
+
+        x_margin = 0.06
+        x_range = 1.0 - (2 * x_margin)
+
+        for i, device_name in enumerate(devices):
+            if len(devices) == 1:
+                x = 0.5
+            else:
+                x = x_margin + (i * x_range / (len(devices) - 1))
+            positions[device_name] = (x, y)
+
+    return positions
+
+
+LAYOUTS = {
+    'zone': _layout_zone_grouped,
+    'hierarchical': _layout_hierarchical,
+    'purdue': _layout_purdue,
+}
+
+
+def generate_diagram(topology, output_path="network_diagram.png",
+                     layout="zone", title=None, figsize=None,
+                     show_legend=True, show_labels=True,
+                     show_connections=True, show_services=False,
+                     dark_mode=False, dpi=150):
+    """
+    Generate a network topology diagram.
+
+    Args:
+        topology: NetworkTopology object
+        output_path: Output file path (.png or .svg)
+        layout: Layout algorithm ('zone', 'hierarchical', 'purdue')
+        title: Diagram title (defaults to topology name)
+        figsize: Figure size tuple (width, height)
+        show_legend: Show device type and zone legend
+        show_labels: Show device name labels
+        show_connections: Draw connection lines
+        show_services: Show service labels on devices
+        dark_mode: Use dark background theme
+        dpi: Output resolution
+    """
+    num_devices = len(topology.devices)
+    if figsize is None:
+        width = max(16, min(28, num_devices * 1.2))
+        height = max(10, min(20, num_devices * 0.7))
+        figsize = (width, height)
+
+    # Theme
+    if dark_mode:
+        bg_color = '#1a1a2e'
+        text_color = '#e0e0e0'
+        edge_color = '#4a4a6a'
+        grid_color = '#2a2a4a'
+        title_color = '#ffffff'
+    else:
+        bg_color = '#fafafa'
+        text_color = '#333333'
+        edge_color = '#cccccc'
+        grid_color = '#eeeeee'
+        title_color = '#1a1a1a'
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
+
+    # Get layout positions
+    layout_fn = LAYOUTS.get(layout, _layout_zone_grouped)
+    positions = layout_fn(topology)
+
+    # Draw zone backgrounds
+    _draw_zone_backgrounds(ax, topology, positions, dark_mode)
+
+    # Draw connections
+    if show_connections:
+        _draw_connections(ax, topology, positions, dark_mode)
+
+    # Draw devices
+    _draw_devices(ax, topology, positions, show_labels, show_services,
+                  dark_mode, text_color)
+
+    # Title
+    diagram_title = title or topology.name
+    ax.set_title(diagram_title, fontsize=18, fontweight='bold',
+                 color=title_color, pad=20)
+
+    # Legend
+    if show_legend:
+        _draw_legend(ax, topology, dark_mode, text_color)
+
+    # Stats annotation
+    stats = topology.get_stats()
+    stats_text = (f"Devices: {stats['total_devices']}  |  "
+                  f"Connections: {stats['total_connections']}  |  "
+                  f"Subnets: {stats['total_subnets']}  |  "
+                  f"Zones: {len(stats['zones'])}")
+    ax.annotate(stats_text, xy=(0.5, -0.02), xycoords='axes fraction',
+                ha='center', fontsize=9, color=text_color, alpha=0.7)
+
+    # Timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ax.annotate(f"Generated by LNDG v1.0 | {timestamp}",
+                xy=(0.99, -0.04), xycoords='axes fraction',
+                ha='right', fontsize=7, color=text_color, alpha=0.5)
+
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.08, 1.05)
+    ax.axis('off')
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=dpi, bbox_inches='tight',
+                facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.close(fig)
+
+    return output_path
+
+
+def _draw_zone_backgrounds(ax, topology, positions, dark_mode):
+    """Draw colored background bands for each security zone."""
+    zone_devices = {}
+    for name, device in topology.devices.items():
+        if name in positions:
+            if device.zone not in zone_devices:
+                zone_devices[device.zone] = []
+            zone_devices[device.zone].append(positions[name])
+
+    for zone, device_positions in zone_devices.items():
+        if not device_positions:
+            continue
+
+        config = ZONE_CONFIG.get(zone, ZONE_CONFIG['internal'])
+        ys = [p[1] for p in device_positions]
+        y_min = min(ys) - 0.04
+        y_max = max(ys) + 0.04
+
+        alpha = 0.15 if dark_mode else 0.25
+        rect = FancyBboxPatch(
+            (-0.03, y_min), 1.06, y_max - y_min,
+            boxstyle="round,pad=0.01",
+            facecolor=config['bg'] if not dark_mode else config['color'],
+            alpha=alpha,
+            edgecolor=config['color'],
+            linewidth=1.5,
+            linestyle='--'
+        )
+        ax.add_patch(rect)
+
+        # Zone label
+        label_color = config['color']
+        ax.text(-0.01, (y_min + y_max) / 2, config['label'],
+                fontsize=8, fontweight='bold', color=label_color,
+                ha='right', va='center', rotation=90, alpha=0.8)
+
+
+def _draw_connections(ax, topology, positions, dark_mode):
+    """Draw connection lines between devices."""
+    for conn in topology.connections:
+        if conn.source not in positions or conn.target not in positions:
+            continue
+
+        src_pos = positions[conn.source]
+        tgt_pos = positions[conn.target]
+
+        # Style based on encryption
+        if conn.encrypted:
+            linestyle = '-'
+            linewidth = 1.5
+            color = '#059669' if not dark_mode else '#34d399'
+        else:
+            linestyle = '--'
+            linewidth = 1.0
+            color = '#9ca3af' if not dark_mode else '#6b7280'
+
+        # OT connections in amber
+        src_device = topology.devices.get(conn.source)
+        tgt_device = topology.devices.get(conn.target)
+        if src_device and tgt_device:
+            if src_device.zone == 'ot' and tgt_device.zone == 'ot':
+                color = '#d97706' if not dark_mode else '#fbbf24'
+
+        ax.plot([src_pos[0], tgt_pos[0]], [src_pos[1], tgt_pos[1]],
+                color=color, linewidth=linewidth, linestyle=linestyle,
+                alpha=0.5, zorder=1)
+
+        # Connection label at midpoint
+        if conn.label:
+            mid_x = (src_pos[0] + tgt_pos[0]) / 2
+            mid_y = (src_pos[1] + tgt_pos[1]) / 2
+            ax.text(mid_x, mid_y, conn.label, fontsize=5,
+                    ha='center', va='center', color=color, alpha=0.6,
+                    bbox=dict(boxstyle='round,pad=0.1',
+                              facecolor='white' if not dark_mode else '#1a1a2e',
+                              alpha=0.7, edgecolor='none'))
+
+
+def _draw_devices(ax, topology, positions, show_labels, show_services,
+                  dark_mode, text_color):
+    """Draw device nodes with type-specific markers."""
+    for name, device in topology.devices.items():
+        if name not in positions:
+            continue
+
+        pos = positions[name]
+        config = ZONE_CONFIG.get(device.zone, ZONE_CONFIG['internal'])
+        marker_config = DEVICE_MARKERS.get(device.device_type, DEVICE_MARKERS['generic'])
+
+        # Risk-based border
+        risk_colors = {
+            'critical': '#DC2626',
+            'high': '#EA580C',
+            'medium': '#F59E0B',
+            'low': config['color'],
+        }
+        edge_color = risk_colors.get(device.risk_level, config['color'])
+
+        ax.scatter(pos[0], pos[1],
+                   marker=marker_config['marker'],
+                   s=marker_config['size'],
+                   c=config['color'] if not dark_mode else config['bg'],
+                   edgecolors=edge_color,
+                   linewidths=2.5 if device.risk_level in ('critical', 'high') else 1.5,
+                   zorder=3,
+                   alpha=0.9)
+
+        if show_labels:
+            # Device type icon above
+            ax.text(pos[0], pos[1] + 0.025, marker_config['icon'],
+                    fontsize=6, ha='center', va='bottom',
+                    fontweight='bold', color=config['color'], alpha=0.8)
+
+            # Device name below
+            label = name
+            if device.ip:
+                label += f"\n{device.ip}"
+            ax.text(pos[0], pos[1] - 0.025, label,
+                    fontsize=6.5, ha='center', va='top',
+                    color=text_color, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.15',
+                              facecolor='white' if not dark_mode else '#2a2a4a',
+                              alpha=0.8, edgecolor='none'))
+
+        if show_services and device.services:
+            svc_text = ', '.join(device.services[:3])
+            if len(device.services) > 3:
+                svc_text += f' +{len(device.services) - 3}'
+            ax.text(pos[0], pos[1] - 0.055, svc_text,
+                    fontsize=5, ha='center', va='top',
+                    color=text_color, alpha=0.6,
+                    style='italic')
+
+
+def _draw_legend(ax, topology, dark_mode, text_color):
+    """Draw device type and zone legend."""
+    # Zone legend
+    zone_patches = []
+    used_zones = set(d.zone for d in topology.devices.values())
+    for zone in sorted(used_zones):
+        config = ZONE_CONFIG.get(zone, ZONE_CONFIG['internal'])
+        patch = mpatches.Patch(
+            facecolor=config['bg'] if not dark_mode else config['color'],
+            edgecolor=config['color'],
+            label=config['label'],
+            alpha=0.6
+        )
+        zone_patches.append(patch)
+
+    if zone_patches:
+        zone_legend = ax.legend(
+            handles=zone_patches,
+            loc='upper right',
+            title='Security Zones',
+            fontsize=7,
+            title_fontsize=8,
+            framealpha=0.9,
+            facecolor='white' if not dark_mode else '#2a2a4a',
+            edgecolor=text_color,
+            labelcolor=text_color,
+        )
+        zone_legend.get_title().set_color(text_color)
+        ax.add_artist(zone_legend)
+
+    # Device type legend
+    type_patches = []
+    used_types = set(d.device_type for d in topology.devices.values())
+    for dtype in sorted(used_types):
+        marker_config = DEVICE_MARKERS.get(dtype, DEVICE_MARKERS['generic'])
+        type_patches.append(
+            plt.Line2D([0], [0],
+                       marker=marker_config['marker'],
+                       color='w',
+                       markerfacecolor='#6b7280',
+                       markeredgecolor='#374151',
+                       markersize=8,
+                       label=f"{marker_config['icon']} {dtype.capitalize()}")
+        )
+
+    if type_patches:
+        type_legend = ax.legend(
+            handles=type_patches,
+            loc='lower right',
+            title='Device Types',
+            fontsize=6,
+            title_fontsize=7,
+            framealpha=0.9,
+            facecolor='white' if not dark_mode else '#2a2a4a',
+            edgecolor=text_color,
+            labelcolor=text_color,
+            ncol=2,
+        )
+        type_legend.get_title().set_color(text_color)
+        ax.add_artist(type_legend)
+
+
+def generate_all_diagrams(topology, output_dir="diagrams"):
+    """Generate diagrams in all available layouts and themes."""
+    os.makedirs(output_dir, exist_ok=True)
+    generated = []
+
+    for layout_name in LAYOUTS:
+        for dark in [False, True]:
+            theme = "dark" if dark else "light"
+            filename = f"network_{layout_name}_{theme}.png"
+            filepath = os.path.join(output_dir, filename)
+
+            generate_diagram(
+                topology,
+                output_path=filepath,
+                layout=layout_name,
+                dark_mode=dark,
+                show_services=(layout_name == 'purdue'),
+                title=f"{topology.name} ({layout_name.capitalize()} Layout)",
+                dpi=150
+            )
+            generated.append(filepath)
+
+    # Also generate SVG version of the zone layout
+    svg_path = os.path.join(output_dir, "network_zone_light.svg")
+    generate_diagram(
+        topology,
+        output_path=svg_path,
+        layout='zone',
+        dark_mode=False,
+        dpi=150
+    )
+    generated.append(svg_path)
+
+    return generated
+
+LNDG_EOF_DIAGRAM_ENGINE
+
+echo "[*] Creating report_generator.py..."
+cat > report_generator.py << 'LNDG_EOF_REPORT_GEN'
+"""
+LNDG - Report Generator
+Generates professional HTML and JSON reports from network topology data.
+Includes topology statistics, device inventory, security zone analysis,
+and risk assessment.
+"""
+
+import json
+import os
+from datetime import datetime
+
+from network_model import ZONE_CONFIG, DEVICE_MARKERS, NetworkTopology
+
+
+def generate_html_report(topology, diagram_paths=None, output_path="lndg_report.html"):
+    """Generate a comprehensive HTML report."""
+    stats = topology.get_stats()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Risk summary
+    risk_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+    for device in topology.devices.values():
+        risk_counts[device.risk_level] = risk_counts.get(device.risk_level, 0) + 1
+
+    # Security findings
+    findings = _analyze_security(topology)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LNDG Report - {topology.name}</title>
+<style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+           background: #0f172a; color: #e2e8f0; line-height: 1.6; }}
+    .container {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
+    .header {{ background: linear-gradient(135deg, #1e293b, #334155);
+              padding: 30px; border-radius: 12px; margin-bottom: 24px;
+              border: 1px solid #475569; }}
+    .header h1 {{ font-size: 28px; color: #f8fafc; margin-bottom: 8px; }}
+    .header .subtitle {{ color: #94a3b8; font-size: 14px; }}
+    .header .meta {{ display: flex; gap: 20px; margin-top: 12px; flex-wrap: wrap; }}
+    .header .meta span {{ background: #1e293b; padding: 4px 12px; border-radius: 6px;
+                         font-size: 12px; color: #cbd5e1; border: 1px solid #475569; }}
+
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px; margin-bottom: 24px; }}
+    .stat-card {{ background: #1e293b; padding: 20px; border-radius: 10px;
+                 border: 1px solid #334155; text-align: center; }}
+    .stat-card .value {{ font-size: 36px; font-weight: 700; }}
+    .stat-card .label {{ font-size: 12px; color: #94a3b8; text-transform: uppercase;
+                        letter-spacing: 1px; margin-top: 4px; }}
+    .stat-card.critical .value {{ color: #ef4444; }}
+    .stat-card.high .value {{ color: #f97316; }}
+    .stat-card.medium .value {{ color: #eab308; }}
+    .stat-card.info .value {{ color: #3b82f6; }}
+    .stat-card.green .value {{ color: #22c55e; }}
+
+    .section {{ background: #1e293b; border-radius: 10px; padding: 24px;
+               margin-bottom: 24px; border: 1px solid #334155; }}
+    .section h2 {{ font-size: 18px; color: #f8fafc; margin-bottom: 16px;
+                  padding-bottom: 8px; border-bottom: 2px solid #3b82f6; }}
+    .section h3 {{ font-size: 15px; color: #cbd5e1; margin: 16px 0 8px; }}
+
+    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+    th {{ background: #334155; color: #e2e8f0; padding: 10px 14px; text-align: left;
+         font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }}
+    td {{ padding: 10px 14px; border-bottom: 1px solid #334155; font-size: 13px; }}
+    tr:hover {{ background: #334155; }}
+
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px;
+             font-size: 11px; font-weight: 600; text-transform: uppercase; }}
+    .badge-critical {{ background: #450a0a; color: #fca5a5; border: 1px solid #dc2626; }}
+    .badge-high {{ background: #431407; color: #fdba74; border: 1px solid #ea580c; }}
+    .badge-medium {{ background: #422006; color: #fde047; border: 1px solid #eab308; }}
+    .badge-low {{ background: #052e16; color: #86efac; border: 1px solid #22c55e; }}
+
+    .zone-badge {{ display: inline-block; padding: 2px 10px; border-radius: 4px;
+                  font-size: 11px; font-weight: 600; }}
+
+    .finding {{ background: #0f172a; border-radius: 8px; padding: 16px;
+               margin-bottom: 12px; border-left: 4px solid; }}
+    .finding.critical {{ border-color: #dc2626; }}
+    .finding.high {{ border-color: #ea580c; }}
+    .finding.medium {{ border-color: #eab308; }}
+    .finding.low {{ border-color: #22c55e; }}
+    .finding .title {{ font-weight: 600; margin-bottom: 4px; }}
+    .finding .detail {{ font-size: 13px; color: #94a3b8; }}
+
+    .diagram-container {{ text-align: center; margin: 16px 0; }}
+    .diagram-container img {{ max-width: 100%; border-radius: 8px;
+                             border: 1px solid #475569; }}
+
+    .footer {{ text-align: center; padding: 20px; color: #64748b; font-size: 12px; }}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+    <h1>LNDG Network Topology Report</h1>
+    <div class="subtitle">{topology.name}</div>
+    <div class="meta">
+        <span>Generated: {timestamp}</span>
+        <span>Source: {topology.metadata.get('source_type', 'unknown')}</span>
+        <span>LNDG v1.0.0</span>
+    </div>
+</div>
+
+<div class="grid">
+    <div class="stat-card info">
+        <div class="value">{stats['total_devices']}</div>
+        <div class="label">Total Devices</div>
+    </div>
+    <div class="stat-card green">
+        <div class="value">{stats['total_connections']}</div>
+        <div class="label">Connections</div>
+    </div>
+    <div class="stat-card info">
+        <div class="value">{stats['total_subnets']}</div>
+        <div class="label">Subnets</div>
+    </div>
+    <div class="stat-card info">
+        <div class="value">{len(stats['zones'])}</div>
+        <div class="label">Security Zones</div>
+    </div>
+    <div class="stat-card critical">
+        <div class="value">{risk_counts.get('critical', 0)}</div>
+        <div class="label">Critical Risk</div>
+    </div>
+    <div class="stat-card high">
+        <div class="value">{risk_counts.get('high', 0)}</div>
+        <div class="label">High Risk</div>
+    </div>
+    <div class="stat-card medium">
+        <div class="value">{risk_counts.get('medium', 0)}</div>
+        <div class="label">Medium Risk</div>
+    </div>
+    <div class="stat-card green">
+        <div class="value">{risk_counts.get('low', 0)}</div>
+        <div class="label">Low Risk</div>
+    </div>
+</div>
+"""
+
+    # Diagram images
+    if diagram_paths:
+        html += '<div class="section">\n<h2>Network Diagrams</h2>\n'
+        for path in diagram_paths:
+            if path.endswith(('.png', '.svg')):
+                basename = os.path.basename(path)
+                html += f'''<div class="diagram-container">
+    <h3>{basename}</h3>
+    <img src="{path}" alt="{basename}">
+</div>\n'''
+        html += '</div>\n'
+
+    # Device inventory
+    html += '''<div class="section">
+<h2>Device Inventory</h2>
+<table>
+<tr><th>Device</th><th>Type</th><th>IP Address</th><th>Zone</th>
+    <th>Services</th><th>OS</th><th>Risk</th></tr>
+'''
+    for name, device in sorted(topology.devices.items()):
+        zone_config = ZONE_CONFIG.get(device.zone, ZONE_CONFIG['internal'])
+        risk_class = device.risk_level
+        services = ', '.join(device.services[:4])
+        if len(device.services) > 4:
+            services += f' +{len(device.services) - 4}'
+
+        html += f'''<tr>
+    <td><strong>{name}</strong></td>
+    <td>{device.device_type.capitalize()}</td>
+    <td>{device.ip or 'N/A'}</td>
+    <td><span class="zone-badge" style="background:{zone_config['color']}22;
+        color:{zone_config['color']};border:1px solid {zone_config['color']}">{device.zone.upper()}</span></td>
+    <td>{services or 'N/A'}</td>
+    <td>{device.os_info or 'N/A'}</td>
+    <td><span class="badge badge-{risk_class}">{risk_class.upper()}</span></td>
+</tr>\n'''
+
+    html += '</table>\n</div>\n'
+
+    # Subnet summary
+    html += '''<div class="section">
+<h2>Subnet Summary</h2>
+<table>
+<tr><th>Subnet</th><th>CIDR</th><th>Zone</th><th>VLAN</th>
+    <th>Devices</th><th>Description</th></tr>
+'''
+    for name, subnet in sorted(topology.subnets.items()):
+        zone_config = ZONE_CONFIG.get(subnet.zone, ZONE_CONFIG['internal'])
+        device_count = len([d for d in topology.devices.values() if d.subnet == name])
+        html += f'''<tr>
+    <td><strong>{name}</strong></td>
+    <td>{subnet.cidr}</td>
+    <td><span class="zone-badge" style="background:{zone_config['color']}22;
+        color:{zone_config['color']};border:1px solid {zone_config['color']}">{subnet.zone.upper()}</span></td>
+    <td>{subnet.vlan or 'N/A'}</td>
+    <td>{device_count}</td>
+    <td>{subnet.description or 'N/A'}</td>
+</tr>\n'''
+
+    html += '</table>\n</div>\n'
+
+    # Connection matrix
+    html += '''<div class="section">
+<h2>Connection Details</h2>
+<table>
+<tr><th>Source</th><th>Target</th><th>Protocol</th><th>Port</th>
+    <th>Encrypted</th><th>Label</th></tr>
+'''
+    for conn in topology.connections:
+        encrypted_badge = ('<span class="badge badge-low">YES</span>'
+                          if conn.encrypted
+                          else '<span class="badge badge-medium">NO</span>')
+        html += f'''<tr>
+    <td>{conn.source}</td>
+    <td>{conn.target}</td>
+    <td>{conn.protocol or 'N/A'}</td>
+    <td>{conn.port or 'N/A'}</td>
+    <td>{encrypted_badge}</td>
+    <td>{conn.label or 'N/A'}</td>
+</tr>\n'''
+
+    html += '</table>\n</div>\n'
+
+    # Security findings
+    if findings:
+        html += '<div class="section">\n<h2>Security Findings</h2>\n'
+        for finding in findings:
+            html += f'''<div class="finding {finding['severity']}">
+    <div class="title">{finding['title']}</div>
+    <div class="detail">{finding['detail']}</div>
+    <div class="detail" style="margin-top:4px"><strong>Affected:</strong> {finding['affected']}</div>
+</div>\n'''
+        html += '</div>\n'
+
+    # Zone distribution
+    html += '<div class="section">\n<h2>Zone Distribution</h2>\n'
+    html += '<table><tr><th>Zone</th><th>Trust Level</th><th>Devices</th><th>Percentage</th></tr>\n'
+    total = stats['total_devices']
+    for zone, count in sorted(stats['devices_by_zone'].items(),
+                               key=lambda x: ZONE_CONFIG.get(x[0], {}).get('trust', 3)):
+        zone_config = ZONE_CONFIG.get(zone, ZONE_CONFIG['internal'])
+        pct = (count / total * 100) if total > 0 else 0
+        html += f'''<tr>
+    <td><span class="zone-badge" style="background:{zone_config['color']}22;
+        color:{zone_config['color']};border:1px solid {zone_config['color']}">{zone_config['label']}</span></td>
+    <td>{zone_config['trust']}/5</td>
+    <td>{count}</td>
+    <td>{pct:.1f}%</td>
+</tr>\n'''
+    html += '</table>\n</div>\n'
+
+    # Footer
+    html += f'''
+<div class="footer">
+    LNDG - Linux Network Diagram Generator v1.0.0 | Report generated {timestamp}<br>
+    Author: Larry Odeyemi | github.com/Sh8rlock/LNDG
+</div>
+
+</div>
+</body>
+</html>'''
+
+    with open(output_path, 'w') as f:
+        f.write(html)
+
+    return output_path
+
+
+def generate_json_report(topology, output_path="lndg_report.json"):
+    """Generate a JSON report with full topology data."""
+    stats = topology.get_stats()
+
+    risk_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+    for device in topology.devices.values():
+        risk_counts[device.risk_level] = risk_counts.get(device.risk_level, 0) + 1
+
+    findings = _analyze_security(topology)
+
+    report = {
+        'report': {
+            'tool': 'LNDG',
+            'version': '1.0.0',
+            'generated': datetime.now().isoformat(),
+            'author': 'Larry Odeyemi',
+        },
+        'topology': topology.to_dict(),
+        'risk_summary': risk_counts,
+        'security_findings': findings,
+        'statistics': stats,
+    }
+
+    with open(output_path, 'w') as f:
+        json.dump(report, f, indent=2, default=str)
+
+    return output_path
+
+
+def _analyze_security(topology):
+    """Analyze topology for security issues."""
+    findings = []
+
+    # Check for unencrypted OT connections
+    unencrypted_ot = []
+    for conn in topology.connections:
+        src = topology.devices.get(conn.source)
+        tgt = topology.devices.get(conn.target)
+        if src and tgt and src.zone == 'ot' and tgt.zone == 'ot':
+            if not conn.encrypted:
+                unencrypted_ot.append(f"{conn.source} → {conn.target} ({conn.protocol or 'unknown'})")
+
+    if unencrypted_ot:
+        findings.append({
+            'severity': 'high',
+            'title': 'Unencrypted OT/ICS Communications',
+            'detail': (f'{len(unencrypted_ot)} OT connections lack encryption. '
+                      'Industrial protocols (Modbus, DNP3) transmit in cleartext, '
+                      'enabling man-in-the-middle attacks on process control data.'),
+            'affected': '; '.join(unencrypted_ot[:5]),
+            'mitre': 'T1557 - Adversary-in-the-Middle',
+        })
+
+    # Check for insecure services
+    insecure_devices = []
+    insecure_services_set = {'FTP', 'Telnet', 'HTTP', 'VNC', 'NetBIOS'}
+    for name, device in topology.devices.items():
+        for svc in device.services:
+            svc_name = svc.split('/')[0].upper()
+            if svc_name in insecure_services_set:
+                insecure_devices.append(f"{name} ({svc})")
+                break
+
+    if insecure_devices:
+        findings.append({
+            'severity': 'medium',
+            'title': 'Insecure Services Detected',
+            'detail': (f'{len(insecure_devices)} devices running insecure/unencrypted services. '
+                      'These services transmit credentials and data in cleartext.'),
+            'affected': '; '.join(insecure_devices[:5]),
+            'mitre': 'T1040 - Network Sniffing',
+        })
+
+    # Check for critical risk devices
+    critical_devices = [name for name, d in topology.devices.items()
+                       if d.risk_level == 'critical']
+    if critical_devices:
+        findings.append({
+            'severity': 'critical',
+            'title': 'Critical Risk Devices Identified',
+            'detail': (f'{len(critical_devices)} devices classified as critical risk. '
+                      'These are typically PLCs, safety controllers, or devices with '
+                      'direct physical process control that require enhanced protection.'),
+            'affected': '; '.join(critical_devices[:5]),
+            'mitre': 'T0831 - Manipulation of Control',
+        })
+
+    # Check for IT/OT boundary
+    it_ot_connections = []
+    for conn in topology.connections:
+        src = topology.devices.get(conn.source)
+        tgt = topology.devices.get(conn.target)
+        if src and tgt:
+            if (src.zone == 'ot') != (tgt.zone == 'ot'):
+                if src.device_type != 'firewall' and tgt.device_type != 'firewall':
+                    it_ot_connections.append(f"{conn.source} → {conn.target}")
+
+    if it_ot_connections:
+        findings.append({
+            'severity': 'high',
+            'title': 'IT/OT Boundary Connections Without Firewall',
+            'detail': (f'{len(it_ot_connections)} connections cross the IT/OT boundary '
+                      'without passing through a firewall. Per NIST 800-82, all IT/OT '
+                      'traffic should be filtered and monitored.'),
+            'affected': '; '.join(it_ot_connections[:5]),
+            'mitre': 'T0886 - Remote Services',
+        })
+
+    # Check for flat network (too many devices in one subnet)
+    for name, subnet in topology.subnets.items():
+        device_count = len([d for d in topology.devices.values() if d.subnet == name])
+        if device_count > 10:
+            findings.append({
+                'severity': 'medium',
+                'title': f'Large Subnet: {name}',
+                'detail': (f'Subnet {name} ({subnet.cidr}) contains {device_count} devices. '
+                          'Consider microsegmentation to limit lateral movement.'),
+                'affected': name,
+                'mitre': 'T1570 - Lateral Tool Transfer',
+            })
+
+    # Check for devices without services listed
+    unknown_devices = [name for name, d in topology.devices.items() if not d.services]
+    if unknown_devices:
+        findings.append({
+            'severity': 'low',
+            'title': 'Devices With Unknown Services',
+            'detail': (f'{len(unknown_devices)} devices have no services documented. '
+                      'Unknown services indicate incomplete asset inventory.'),
+            'affected': '; '.join(unknown_devices[:5]),
+            'mitre': 'T1046 - Network Service Discovery',
+        })
+
+    return findings
+
+LNDG_EOF_REPORT_GEN
+
+echo "[*] Creating run_lndg.py..."
+cat > run_lndg.py << 'LNDG_EOF_RUN_LNDG'
+#!/usr/bin/env python3
+"""
+LNDG - Linux Network Diagram Generator
+Main entry point for generating network topology diagrams.
+
+Usage:
+    python run_lndg.py --demo                    # Run with demo enterprise + OT/ICS network
+    python run_lndg.py --demo-small              # Run with small office demo
+    python run_lndg.py --config network.yaml     # Generate from YAML config
+    python run_lndg.py --config network.json     # Generate from JSON config
+    python run_lndg.py --nmap scan.xml           # Generate from nmap XML output
+    python run_lndg.py --demo --dark             # Dark mode diagrams
+    python run_lndg.py --demo --layout purdue    # Use Purdue Model layout
+    python run_lndg.py --demo --all-layouts      # Generate all layout variants
+
+Author: Larry Odeyemi
+GitHub: github.com/Sh8rlock/LNDG
+"""
+
+import argparse
+import os
+import sys
+import time
+from datetime import datetime
+
+
+# ── Banner ───────────────────────────────────────────────────
+BANNER = r"""
+ ╔══════════════════════════════════════════════════════════╗
+ ║     _     _   _ ____   ____                             ║
+ ║    | |   | \ | |  _ \ / ___|                            ║
+ ║    | |   |  \| | | | | |  _                             ║
+ ║    | |___| |\  | |_| | |_| |                            ║
+ ║    |_____|_| \_|____/ \____|                             ║
+ ║                                                          ║
+ ║    Linux Network Diagram Generator v1.0.0                ║
+ ║    Network Topology Visualization & Security Analysis    ║
+ ║    Author: Larry Odeyemi                                 ║
+ ╚══════════════════════════════════════════════════════════╝
+"""
+
+
+def print_banner():
+    """Display the LNDG banner."""
+    print(BANNER)
+
+
+def print_stats(topology):
+    """Print topology statistics."""
+    stats = topology.get_stats()
+    print(f"\n{'─' * 56}")
+    print(f"  Topology: {topology.name}")
+    print(f"  Source:    {topology.metadata.get('source_type', 'unknown')}")
+    print(f"{'─' * 56}")
+    print(f"  Devices:     {stats['total_devices']}")
+    print(f"  Connections: {stats['total_connections']}")
+    print(f"  Subnets:     {stats['total_subnets']}")
+    print(f"  Zones:       {len(stats['zones'])}")
+    print(f"{'─' * 56}")
+
+    print(f"\n  Devices by Zone:")
+    for zone, count in sorted(stats['devices_by_zone'].items()):
+        bar = '█' * count
+        print(f"    {zone:15s} │ {count:3d} │ {bar}")
+
+    print(f"\n  Devices by Type:")
+    for dtype, count in sorted(stats['devices_by_type'].items()):
+        bar = '▓' * count
+        print(f"    {dtype:15s} │ {count:3d} │ {bar}")
+
+    # Risk summary
+    risk_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+    for device in topology.devices.values():
+        risk_counts[device.risk_level] = risk_counts.get(device.risk_level, 0) + 1
+
+    print(f"\n  Risk Distribution:")
+    risk_icons = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}
+    for level in ['critical', 'high', 'medium', 'low']:
+        count = risk_counts[level]
+        icon = risk_icons[level]
+        bar = '█' * count
+        print(f"    {icon} {level:10s} │ {count:3d} │ {bar}")
+
+    print(f"{'─' * 56}")
+
+
+def run_demo(args):
+    """Run with demo data."""
+    from demo_data import generate_demo_topology, generate_small_demo
+
+    print("[*] Generating demo topology...")
+    if args.demo_small:
+        topology = generate_small_demo()
+    else:
+        topology = generate_demo_topology()
+
+    print(f"[+] Created {len(topology.devices)} devices, "
+          f"{len(topology.connections)} connections, "
+          f"{len(topology.subnets)} subnets")
+
+    return topology
+
+
+def run_config(args):
+    """Run with config file input."""
+    from config_parser import parse_config
+
+    print(f"[*] Parsing config file: {args.config}")
+    topology = parse_config(args.config)
+    print(f"[+] Loaded {len(topology.devices)} devices from config")
+
+    return topology
+
+
+def run_nmap(args):
+    """Run with nmap XML input."""
+    from nmap_parser import parse_nmap_xml
+
+    print(f"[*] Parsing nmap XML: {args.nmap}")
+    topology = parse_nmap_xml(args.nmap)
+    print(f"[+] Discovered {len(topology.devices)} hosts from scan")
+
+    return topology
+
+
+def generate_outputs(topology, args):
+    """Generate diagrams and reports."""
+    from diagram_engine import generate_diagram, generate_all_diagrams
+    from report_generator import generate_html_report, generate_json_report
+
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    generated_files = []
+    diagram_paths = []
+
+    # Generate diagrams
+    print(f"\n[*] Generating diagrams...")
+    start_time = time.time()
+
+    if args.all_layouts:
+        # Generate all layout variants
+        paths = generate_all_diagrams(topology, output_dir=output_dir)
+        diagram_paths.extend(paths)
+        for p in paths:
+            print(f"    [+] {os.path.basename(p)}")
+    else:
+        # Single layout
+        layout = args.layout or 'zone'
+        dark = args.dark
+
+        theme = "dark" if dark else "light"
+        png_path = os.path.join(output_dir, f"network_{layout}_{theme}.png")
+        svg_path = os.path.join(output_dir, f"network_{layout}_{theme}.svg")
+
+        generate_diagram(
+            topology,
+            output_path=png_path,
+            layout=layout,
+            dark_mode=dark,
+            show_services=args.show_services,
+            dpi=args.dpi,
+        )
+        diagram_paths.append(png_path)
+        print(f"    [+] {os.path.basename(png_path)}")
+
+        # Also generate SVG
+        generate_diagram(
+            topology,
+            output_path=svg_path,
+            layout=layout,
+            dark_mode=dark,
+            show_services=args.show_services,
+            dpi=args.dpi,
+        )
+        diagram_paths.append(svg_path)
+        print(f"    [+] {os.path.basename(svg_path)}")
+
+    elapsed = time.time() - start_time
+    print(f"    Diagrams generated in {elapsed:.2f}s")
+
+    generated_files.extend(diagram_paths)
+
+    # Generate reports
+    print(f"\n[*] Generating reports...")
+
+    html_path = os.path.join(output_dir, "lndg_report.html")
+    generate_html_report(topology, diagram_paths=diagram_paths, output_path=html_path)
+    generated_files.append(html_path)
+    print(f"    [+] {os.path.basename(html_path)}")
+
+    json_path = os.path.join(output_dir, "lndg_report.json")
+    generate_json_report(topology, output_path=json_path)
+    generated_files.append(json_path)
+    print(f"    [+] {os.path.basename(json_path)}")
+
+    # Export topology as YAML config (useful for editing and re-running)
+    if args.export_config:
+        from config_parser import generate_sample_config
+        config_path = os.path.join(output_dir, "exported_topology.yaml")
+        # Write the topology data as YAML
+        import yaml
+        export_data = {'network': topology.to_dict()}
+        with open(config_path, 'w') as f:
+            yaml.dump(export_data, f, default_flow_style=False, sort_keys=False)
+        generated_files.append(config_path)
+        print(f"    [+] {os.path.basename(config_path)}")
+
+    return generated_files
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='LNDG - Linux Network Diagram Generator',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run_lndg.py --demo                     Full enterprise + OT/ICS demo
+  python run_lndg.py --demo-small               Small office demo
+  python run_lndg.py --demo --dark              Dark mode output
+  python run_lndg.py --demo --layout purdue     Purdue Model layout
+  python run_lndg.py --demo --all-layouts       All layout variants
+  python run_lndg.py --config network.yaml      From YAML config
+  python run_lndg.py --nmap scan.xml            From nmap scan results
+  python run_lndg.py --demo --export-config     Export topology as YAML
+        """
+    )
+
+    # Input sources (mutually exclusive)
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--demo', action='store_true',
+                            help='Run with full enterprise + OT/ICS demo network')
+    input_group.add_argument('--demo-small', action='store_true',
+                            help='Run with small office demo network')
+    input_group.add_argument('--config', type=str,
+                            help='Path to YAML or JSON config file')
+    input_group.add_argument('--nmap', type=str,
+                            help='Path to nmap XML output file')
+    input_group.add_argument('--generate-sample', action='store_true',
+                            help='Generate sample config and nmap files')
+
+    # Layout options
+    parser.add_argument('--layout', type=str, choices=['zone', 'hierarchical', 'purdue'],
+                       default='zone', help='Diagram layout algorithm (default: zone)')
+    parser.add_argument('--all-layouts', action='store_true',
+                       help='Generate all layout variants (light + dark)')
+    parser.add_argument('--dark', action='store_true',
+                       help='Use dark mode theme')
+
+    # Output options
+    parser.add_argument('--output-dir', '-o', type=str, default='output',
+                       help='Output directory (default: output)')
+    parser.add_argument('--dpi', type=int, default=150,
+                       help='Diagram resolution in DPI (default: 150)')
+    parser.add_argument('--show-services', action='store_true',
+                       help='Show service labels on devices')
+    parser.add_argument('--export-config', action='store_true',
+                       help='Export topology as YAML config file')
+
+    args = parser.parse_args()
+
+    print_banner()
+
+    # Generate sample files
+    if args.generate_sample:
+        from config_parser import generate_sample_config
+        from nmap_parser import generate_sample_nmap_xml
+
+        print("[*] Generating sample files...")
+        yaml_path = generate_sample_config("sample_network.yaml")
+        print(f"    [+] {yaml_path}")
+        xml_path = generate_sample_nmap_xml("sample_nmap_scan.xml")
+        print(f"    [+] {xml_path}")
+        print(f"\n[*] Use these as templates:")
+        print(f"    python run_lndg.py --config {yaml_path}")
+        print(f"    python run_lndg.py --nmap {xml_path}")
+        return
+
+    # Load topology from selected source
+    if args.demo or args.demo_small:
+        topology = run_demo(args)
+    elif args.config:
+        topology = run_config(args)
+    elif args.nmap:
+        topology = run_nmap(args)
+
+    # Print stats
+    print_stats(topology)
+
+    # Generate outputs
+    generated = generate_outputs(topology, args)
+
+    # Summary
+    print(f"\n{'═' * 56}")
+    print(f"  LNDG COMPLETE")
+    print(f"{'═' * 56}")
+    print(f"  Output directory: {os.path.abspath(args.output_dir)}")
+    print(f"  Files generated:  {len(generated)}")
+    for f in generated:
+        size = os.path.getsize(f)
+        size_str = f"{size / 1024:.1f} KB" if size > 1024 else f"{size} B"
+        print(f"    • {os.path.basename(f):40s} {size_str}")
+    print(f"{'═' * 56}")
+    print(f"  Open lndg_report.html in a browser to view the full report.")
+    print()
+
+
+if __name__ == '__main__':
+    main()
+
+LNDG_EOF_RUN_LNDG
+
+
+echo "[*] Creating .gitignore..."
+cat > .gitignore << 'LNDG_EOF_GITIGNORE'
+__pycache__/
+*.pyc
+*.pyo
+output/
+diagrams/
+*.egg-info/
+dist/
+build/
+.env
+.venv
+LNDG_EOF_GITIGNORE
+
+
+echo "[*] Creating LICENSE..."
+cat > LICENSE << 'LNDG_EOF_LICENSE'
+MIT License
+
+Copyright (c) 2026 Larry Odeyemi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+LNDG_EOF_LICENSE
+
+
+echo "[*] Creating requirements.txt..."
+cat > requirements.txt << 'LNDG_EOF_REQS'
+matplotlib>=3.5.0
+pyyaml>=6.0
+Pillow>=9.0
+LNDG_EOF_REQS
+
+
+echo ""
+echo "════════════════════════════════════════════════════════"
+echo "  LNDG Setup Complete!"
+echo "════════════════════════════════════════════════════════"
+echo "  Files created:"
+echo "    • network_model.py       - Custom graph model"
+echo "    • config_parser.py       - YAML/JSON config parser"
+echo "    • nmap_parser.py         - Nmap XML parser"
+echo "    • demo_data.py           - Demo topology generator"
+echo "    • diagram_engine.py      - Diagram renderer"
+echo "    • report_generator.py    - HTML/JSON report generator"
+echo "    • run_lndg.py            - Main entry point"
+echo "    • requirements.txt       - Python dependencies"
+echo "    • .gitignore"
+echo "    • LICENSE"
+echo ""
+echo "  Install dependencies:"
+echo "    pip install -r requirements.txt"
+echo ""
+echo "  Quick test:"
+echo "    python run_lndg.py --demo"
+echo ""
+echo "  All layouts:"
+echo "    python run_lndg.py --demo --all-layouts"
+echo "════════════════════════════════════════════════════════"
