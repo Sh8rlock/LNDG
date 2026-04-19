@@ -1,7 +1,0 @@
-﻿Step,Time
-Move setup_lndg.txt to folder,30 seconds
-bash setup_lndg.txt,~5 seconds
-pip install -r requirements.txt,~30 seconds (just matplotlib + pyyaml)
-python run_lndg.py --demo,~10 seconds
-Create repo on GitHub,1 minute
-git init → git push,30 seconds
