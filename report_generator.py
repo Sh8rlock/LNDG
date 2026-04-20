@@ -267,7 +267,7 @@ def generate_html_report(topology, diagram_paths=None, output_path="lndg_report.
 </body>
 </html>'''
 
-    with open(output_path, 'w') as f:
+    with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
     return output_path
@@ -296,7 +296,7 @@ def generate_json_report(topology, output_path="lndg_report.json"):
         'statistics': stats,
     }
 
-    with open(output_path, 'w') as f:
+    with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(report, f, indent=2, default=str)
 
     return output_path
